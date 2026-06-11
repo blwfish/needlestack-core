@@ -132,7 +132,7 @@ class Captioner:
         try:
             resp = self._client.get(f"{self.base_url}/api/tags", timeout=5.0)
             resp.raise_for_status()
-        except Exception:
+        except (httpx.RequestError, httpx.HTTPStatusError, OSError):
             return False, f"Ollama not reachable at {self.base_url}"
 
         models = [m["name"] for m in resp.json().get("models", [])]
@@ -167,8 +167,11 @@ class Captioner:
         resp = self._client.post(f"{self.base_url}/api/generate", json=body)
         resp.raise_for_status()
         data = resp.json()
-        if data.get("done_reason") == "length":
+        done_reason = data.get("done_reason")
+        if done_reason == "length":
             _log.warning("Caption truncated at token limit (model=%s)", self.model)
+        elif done_reason not in ("stop", None):
+            _log.warning("Unexpected done_reason=%r (model=%s)", done_reason, self.model)
         return data
 
     def _plain_caption(self, b64: str) -> CaptionResult:
@@ -217,8 +220,9 @@ class Captioner:
         equip_tokens: list[str] = []     # subject types + class/road names
         equip_phrases: list[str] = []    # human-readable per-item phrases for the caption
 
-        for item in items:
+        for idx, item in enumerate(items):
             if not isinstance(item, dict):
+                _log.debug("Skipping non-dict item at index %d in model output", idx)
                 continue
             etype = str(item.get("type") or "").strip()
             if etype and etype.lower() not in domain.valid_subject_types:
