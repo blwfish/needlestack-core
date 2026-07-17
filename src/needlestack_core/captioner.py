@@ -13,6 +13,37 @@ from .constants import DEFAULT_MODEL, OLLAMA_URL
 
 _log = logging.getLogger(__name__)
 
+@dataclass
+class CaptionStats:
+    """Aggregate Ollama call timing across a Captioner's lifetime, sourced from
+    telemetry (total_duration, eval_count, eval_duration, load_duration,
+    prompt_eval_count) that Ollama already returns on every /api/generate call.
+    Previously this data was read only for done_reason and otherwise discarded —
+    the hardcoded tier-speed estimates in constants.py had no measured data behind
+    them despite this being available for free. Accumulates across every call a
+    Captioner makes (the structured caption call, an optional OCR pass, and the
+    plain-text fallback), so avg_seconds_per_call reflects real per-call cost
+    including thorough=True's extra OCR call.
+    """
+    calls: int = 0
+    total_duration_ns: int = 0
+    total_eval_count: int = 0
+    total_eval_duration_ns: int = 0
+    total_load_duration_ns: int = 0
+    total_prompt_eval_count: int = 0
+
+    @property
+    def avg_seconds_per_call(self) -> float:
+        return (self.total_duration_ns / self.calls / 1e9) if self.calls else 0.0
+
+    @property
+    def tokens_per_second(self) -> float:
+        return (
+            (self.total_eval_count / (self.total_eval_duration_ns / 1e9))
+            if self.total_eval_duration_ns else 0.0
+        )
+
+
 _OCR_PROMPT = (
     "List every piece of text legible in this image — identifiers, names, numbers, "
     "heralds, plates, signs, any lettering. "
@@ -101,6 +132,7 @@ class Captioner:
         self.base_url = base_url.rstrip("/")
         self._domain = domain
         self._client = httpx.Client(timeout=httpx.Timeout(120.0, connect=5.0))
+        self.stats = CaptionStats()
 
     # -- public API ---------------------------------------------------------------
 
@@ -173,12 +205,24 @@ class Captioner:
         resp = self._client.post(f"{self.base_url}/api/generate", json=body)
         resp.raise_for_status()
         data = resp.json()
+        self._record_stats(data)
         done_reason = data.get("done_reason")
         if done_reason == "length":
             _log.warning("Caption truncated at token limit (model=%s)", self.model)
         elif done_reason not in ("stop", None):
             _log.warning("Unexpected done_reason=%r (model=%s)", done_reason, self.model)
         return data
+
+    def _record_stats(self, data: dict) -> None:
+        """Accumulate Ollama's per-request timing telemetry into self.stats.
+        Fields missing from the response (older Ollama versions, or any response
+        shape that omits them) contribute zero rather than raising."""
+        self.stats.calls += 1
+        self.stats.total_duration_ns += data.get("total_duration") or 0
+        self.stats.total_eval_count += data.get("eval_count") or 0
+        self.stats.total_eval_duration_ns += data.get("eval_duration") or 0
+        self.stats.total_load_duration_ns += data.get("load_duration") or 0
+        self.stats.total_prompt_eval_count += data.get("prompt_eval_count") or 0
 
     def _plain_caption(self, b64: str) -> CaptionResult:
         """Old single-call behavior, used when structured parsing fails."""

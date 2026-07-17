@@ -10,8 +10,13 @@ OLLAMA_URL = "http://localhost:11434"
 
 # Named model presets — convenience aliases over --model.
 # fast:     low-RAM / CPU-only machines; good for type + identifier, approximate components
-# balanced: default; good GPU/Apple-Silicon fit; ~4s/photo
-# quality:  high-VRAM machines; best component/armament detail; ~90-120s/photo — warn users
+# balanced: default; good GPU/Apple-Silicon fit; rough estimate ~4s/photo
+# quality:  high-VRAM machines; best component/armament detail; rough estimate ~90-120s/photo
+#           — warn users
+# These per-tier numbers are rough guesses, not measured. For real measured
+# throughput on your hardware, see the "captioning: Xs/call" line `needlestack
+# index` prints after a run (Captioner.stats, driven by Ollama's own per-request
+# timing telemetry).
 MODEL_PRESETS: dict[str, str] = {
     "fast":     "minicpm-v:latest",
     "balanced": "qwen2.5vl:7b",

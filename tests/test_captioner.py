@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from PIL import Image
 
-from needlestack_core.captioner import Captioner, CaptionResult
+from needlestack_core.captioner import Captioner, CaptionResult, CaptionStats
 from needlestack_core.taxonomy import NAVAL, RAILROAD, ARMOR, AVIATION
 
 
@@ -28,6 +28,94 @@ def mock_generate_response(text, done_reason="stop"):
 
 def mock_json_generate(payload, done_reason="stop"):
     return mock_generate_response(json.dumps(payload), done_reason)
+
+
+def mock_generate_with_stats(text, *, total_duration=0, eval_count=0,
+                              eval_duration=0, load_duration=0, prompt_eval_count=0):
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {
+        "response": text, "done_reason": "stop", "done": True,
+        "total_duration": total_duration, "eval_count": eval_count,
+        "eval_duration": eval_duration, "load_duration": load_duration,
+        "prompt_eval_count": prompt_eval_count,
+    }
+    return resp
+
+
+# --- CaptionStats ---
+
+def test_caption_stats_initial_state():
+    c = Captioner()
+    assert c.stats == CaptionStats()
+    assert c.stats.avg_seconds_per_call == 0.0
+    assert c.stats.tokens_per_second == 0.0
+
+
+def test_generate_accumulates_stats_from_telemetry():
+    c = Captioner()
+    resp = mock_generate_with_stats(
+        "hi", total_duration=2_000_000_000, eval_count=50,
+        eval_duration=1_000_000_000, load_duration=100_000_000, prompt_eval_count=10,
+    )
+    with patch.object(c._client, "post", return_value=resp):
+        c._generate("prompt", "b64")
+    assert c.stats.calls == 1
+    assert c.stats.total_duration_ns == 2_000_000_000
+    assert c.stats.total_eval_count == 50
+    assert c.stats.total_eval_duration_ns == 1_000_000_000
+    assert c.stats.total_load_duration_ns == 100_000_000
+    assert c.stats.total_prompt_eval_count == 10
+    assert c.stats.avg_seconds_per_call == pytest.approx(2.0)
+    assert c.stats.tokens_per_second == pytest.approx(50.0)
+    c.close()
+
+
+def test_generate_accumulates_across_multiple_calls():
+    c = Captioner()
+    resp1 = mock_generate_with_stats("a", total_duration=1_000_000_000, eval_count=10,
+                                     eval_duration=500_000_000)
+    resp2 = mock_generate_with_stats("b", total_duration=3_000_000_000, eval_count=20,
+                                     eval_duration=500_000_000)
+    with patch.object(c._client, "post", side_effect=[resp1, resp2]):
+        c._generate("prompt", "b64")
+        c._generate("prompt", "b64")
+    assert c.stats.calls == 2
+    assert c.stats.total_duration_ns == 4_000_000_000
+    assert c.stats.total_eval_count == 30
+    assert c.stats.avg_seconds_per_call == pytest.approx(2.0)  # 4s total / 2 calls
+    c.close()
+
+
+def test_generate_missing_telemetry_fields_contribute_zero():
+    """An ambiguous/older-Ollama response omitting timing fields must not crash —
+    the call still counts, contributing zero to the duration/eval totals."""
+    c = Captioner()
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"response": "hi", "done_reason": "stop", "done": True}
+    with patch.object(c._client, "post", return_value=resp):
+        c._generate("prompt", "b64")
+    assert c.stats.calls == 1
+    assert c.stats.total_duration_ns == 0
+    assert c.stats.avg_seconds_per_call == 0.0
+    c.close()
+
+
+def test_caption_thorough_accumulates_two_calls():
+    """thorough=True issues a structured call plus a dedicated OCR pass — both
+    must be counted in stats.calls."""
+    c = Captioner()
+    structured = mock_generate_with_stats(
+        json.dumps({"is_railroad": True, "description": "d", "equipment": []}),
+        total_duration=1_000_000_000,
+    )
+    ocr = mock_generate_with_stats("ATSF 1234", total_duration=500_000_000)
+    with patch.object(c._client, "post", side_effect=[structured, ocr]):
+        c.caption(make_image(), thorough=True)
+    assert c.stats.calls == 2
+    assert c.stats.total_duration_ns == 1_500_000_000
+    c.close()
 
 
 # --- caption(): structured output ---
