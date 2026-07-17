@@ -50,7 +50,7 @@ def _make_prompt(domain: Domain) -> str:
     item_singular = frags["item_singular"]
     id_instruction = frags["id_instruction"]
     era_examples = frags["era_examples"]
-    view_instruction = frags["view_instruction"]
+    view_instruction = ", ".join(domain.views)
     type_note = frags.get("type_note", "")
 
     type_instruction = (
@@ -128,11 +128,17 @@ class Captioner:
         return self._build_result(parsed, self._domain)
 
     def check(self) -> tuple[bool, str]:
-        """Return (ok, message). Checks Ollama is running and model is available."""
+        """Return (ok, message). Checks Ollama is running and model is available.
+
+        Broad catch is intentional and matches the return contract: this method's
+        entire purpose is to turn "is Ollama reachable" into a status tuple for the
+        caller to display, never to raise — any failure to reach or parse the
+        response means "not reachable," regardless of the specific exception type.
+        """
         try:
             resp = self._client.get(f"{self.base_url}/api/tags", timeout=5.0)
             resp.raise_for_status()
-        except (httpx.RequestError, httpx.HTTPStatusError, OSError):
+        except Exception:
             return False, f"Ollama not reachable at {self.base_url}"
 
         models = [m["name"] for m in resp.json().get("models", [])]
@@ -209,6 +215,15 @@ class Captioner:
         era = str(parsed.get("era") or "").strip()
         view = str(parsed.get("view") or "").strip()
         is_subject = bool(parsed.get(domain.subject_field))
+
+        # setting/view are drawn from bounded vocabularies (domain.settings / domain.views);
+        # era is deliberately freeform (era_examples are illustrative, not exhaustive), so
+        # it has no vocabulary to check against. Kept regardless — an out-of-vocabulary
+        # value is model drift worth knowing about, not a reason to drop the field.
+        if setting and setting.lower() not in {s.lower() for s in domain.settings}:
+            _log.info("Unknown %s setting from model (kept): %r", domain.name, setting)
+        if view and view.lower() not in {v.lower() for v in domain.views}:
+            _log.info("Unknown %s view from model (kept): %r", domain.name, view)
 
         items = parsed.get(domain.items_field)
         items = items if isinstance(items, list) else []

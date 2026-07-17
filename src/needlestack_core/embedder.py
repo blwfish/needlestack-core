@@ -8,6 +8,12 @@ PRETRAINED = "openai"
 
 
 class Embedder:
+    # Output dimensionality of MODEL_NAME/PRETRAINED. A class attribute (not just an
+    # instance property) so consumers needing the shape — e.g. an empty result matrix —
+    # can reference it without loading the CLIP model. Single source of truth: update
+    # this if the model changes; nothing else should hardcode 512.
+    dim: int = 512
+
     def __init__(self, model_name: str = MODEL_NAME, pretrained: str = PRETRAINED):
         self.device = (
             "mps" if torch.backends.mps.is_available()
@@ -33,7 +39,3 @@ class Embedder:
             features = self.model.encode_text(tokens)
             features = features / features.norm(dim=-1, keepdim=True)
         return features.cpu().numpy()[0]
-
-    @property
-    def dim(self) -> int:
-        return 512

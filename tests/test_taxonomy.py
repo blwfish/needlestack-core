@@ -1,6 +1,8 @@
 import pytest
 from needlestack_core import taxonomy
-from needlestack_core.taxonomy import RAILROAD, NAVAL, ARMOR, AVIATION, BIRDS, MOTORSPORTS, get_domain, DOMAINS
+from needlestack_core.taxonomy import (
+    RAILROAD, NAVAL, ARMOR, AVIATION, BIRDS, MOTORSPORTS, get_domain, resolve_domain, DOMAINS,
+)
 
 
 # --- backward-compatible module-level helpers (RAILROAD wrappers) ---
@@ -104,11 +106,47 @@ def test_domain_item_fields_have_type_and_details():
 
 
 def test_domain_prompt_fragments_required_keys():
+    # view_instruction is generated from domain.views, not a hand-typed fragment.
     required = {"preamble", "subject_qualifier", "item_singular", "id_instruction",
-                "era_examples", "view_instruction", "fallback_preamble"}
+                "era_examples", "fallback_preamble"}
     for domain in DOMAINS.values():
         missing = required - set(domain.prompt_fragments)
         assert not missing, f"{domain.name} missing prompt_fragments: {missing}"
+        assert "view_instruction" not in domain.prompt_fragments, (
+            f"{domain.name}: view_instruction should come from domain.views, not "
+            "a duplicated hand-typed fragment"
+        )
+
+
+def test_domain_views_nonempty_and_used_in_prompt():
+    from needlestack_core.captioner import _make_prompt
+    for domain in DOMAINS.values():
+        assert domain.views, f"{domain.name}: views must be non-empty"
+        prompt = _make_prompt(domain)
+        assert domain.views[0] in prompt
+        assert domain.views[-1] in prompt
+
+
+def test_domain_display_label_set():
+    for domain in DOMAINS.values():
+        assert domain.display_label, f"{domain.name}: display_label must be set"
+
+
+def test_resolve_domain_known_name():
+    assert resolve_domain("naval") is NAVAL
+
+
+def test_resolve_domain_unknown_name_falls_back_to_railroad_and_logs(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="needlestack_core.taxonomy"):
+        result = resolve_domain("steampunk")
+    assert result is RAILROAD
+    assert any("steampunk" in r.message for r in caplog.records)
+
+
+def test_resolve_domain_unknown_name_custom_default():
+    result = resolve_domain("steampunk", default=NAVAL)
+    assert result is NAVAL
 
 
 def test_naval_synonyms_for_known_term():

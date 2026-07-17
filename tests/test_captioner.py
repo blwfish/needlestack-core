@@ -112,6 +112,56 @@ def test_caption_unknown_equipment_type_kept_and_logged(caplog):
     c.close()
 
 
+def test_caption_unknown_setting_kept_and_logged(caplog):
+    """setting is drawn from a bounded vocabulary (domain.settings); an out-of-vocab
+    value must still be kept (not dropped) and logged, like the `type` field."""
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a train", "setting": "space station",
+               "equipment": []}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack_core.captioner"):
+            result = c.caption(make_image())
+    assert "space station" in result.caption           # kept
+    assert any("space station" in r.message for r in caplog.records)  # logged
+    c.close()
+
+
+def test_caption_known_setting_not_logged(caplog):
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a train", "setting": "yard",
+               "equipment": []}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack_core.captioner"):
+            c.caption(make_image())
+    assert not any("Unknown railroad setting" in r.message for r in caplog.records)
+    c.close()
+
+
+def test_caption_unknown_view_kept_and_logged(caplog):
+    """view is drawn from domain.views; an out-of-vocab value must still be kept
+    (not dropped) and logged, like the `type` field."""
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a train", "view": "underwater",
+               "equipment": []}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack_core.captioner"):
+            result = c.caption(make_image())
+    assert "underwater" in result.caption               # kept
+    assert any("underwater" in r.message for r in caplog.records)  # logged
+    c.close()
+
+
+def test_caption_known_view_not_logged(caplog):
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a train", "view": "broadside",
+               "equipment": []}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack_core.captioner"):
+            c.caption(make_image())
+    assert not any("Unknown railroad view" in r.message for r in caplog.records)
+    c.close()
+
+
 def test_caption_malformed_json_falls_back_to_plain():
     """The ambiguous failure case: non-JSON model output must fall back to a plain
     free-text caption rather than crashing or losing the image."""

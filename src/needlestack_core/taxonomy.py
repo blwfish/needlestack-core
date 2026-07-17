@@ -5,7 +5,10 @@ needed by the captioner, query expander, and doctor. Nothing re-encodes domain r
 outside this module. (Syntactic-Semantic Seam rule: one source of truth.)
 """
 
+import logging
 from dataclasses import dataclass, field
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,11 +26,16 @@ class Domain:
     subject_types: dict[str, list[str]]  # canonical type → synonyms
     identifier_label: str                 # display: "reporting marks" / "hull number"
     settings: list[str]
+    display_label: str                    # UI label: "Railroad / railway"
     # JSON field names (vary so the model uses natural terminology per domain)
     subject_field: str    # boolean: "is_railroad" / "is_naval"
     items_field: str      # array: "equipment" / "vessels"
     # Per-item field definitions — order determines caption phrase word order
     item_fields: list[tuple[str, str]]
+    # Canonical camera-perspective vocabulary. Single source of truth for both the
+    # prompt's view_instruction (captioner._make_prompt joins these) and validating
+    # the model's returned `view` value (captioner._build_result logs unrecognized ones).
+    views: list[str]
     # Prompt text fragments consumed by captioner._make_prompt()
     prompt_fragments: dict[str, str]
     # Optional notation dict (e.g. Whyte wheel arrangements for steam)
@@ -112,6 +120,7 @@ RAILROAD = Domain(
     subject_types=EQUIPMENT,
     identifier_label="reporting marks",
     settings=SETTINGS,
+    display_label="Railroad / railway",
     subject_field="is_railroad",
     items_field="equipment",
     item_fields=[
@@ -120,6 +129,10 @@ RAILROAD = Domain(
         ("reporting_marks", "high"),
         ("road_number", "high"),
         ("details", "phrase"),
+    ],
+    views=[
+        "broadside", "three-quarter front", "three-quarter rear", "roster shot",
+        "action/moving", "detail closeup", "overhead", "aerial",
     ],
     prompt_fragments={
         "preamble": "This is a railroad or railway photograph (or might be).",
@@ -131,10 +144,6 @@ RAILROAD = Domain(
             "you can actually read on the equipment; leave blank if not legible."
         ),
         "era_examples": "steam era, 1950s diesel transition, modern",
-        "view_instruction": (
-            "broadside, three-quarter front, three-quarter rear, roster shot, "
-            "action/moving, detail closeup, overhead, aerial"
-        ),
         "type_note": (
             "For steam locomotives, if the wheel configuration is clearly legible, "
             "give the Whyte notation (e.g. 2-8-2 Mikado, 4-8-4 Northern)."
@@ -191,6 +200,7 @@ NAVAL = Domain(
     subject_types=_NAVAL_SUBJECT_TYPES,
     identifier_label="hull number",
     settings=_NAVAL_SETTINGS,
+    display_label="Naval / warships",
     subject_field="is_naval",
     items_field="vessels",
     item_fields=[
@@ -199,6 +209,10 @@ NAVAL = Domain(
         ("hull_number", "high"),
         ("ship_name", "high"),
         ("details", "phrase"),
+    ],
+    views=[
+        "broadside", "bow quarter", "stern quarter", "aerial/overhead",
+        "drydock", "detail closeup",
     ],
     prompt_fragments={
         "preamble": "This is a naval or maritime photograph (or might be).",
@@ -213,10 +227,6 @@ NAVAL = Domain(
             "Fill class_name (e.g. Iowa-class, Spruance-class) only when you are certain."
         ),
         "era_examples": "pre-war, WWII, Cold War, Vietnam era, modern",
-        "view_instruction": (
-            "broadside, bow quarter, stern quarter, aerial/overhead, "
-            "drydock, detail closeup"
-        ),
         "type_note": "",
         "fallback_preamble": (
             "This is a naval or maritime photograph. Describe it for a searchable "
@@ -272,6 +282,7 @@ ARMOR = Domain(
     subject_types=_ARMOR_SUBJECT_TYPES,
     identifier_label="tactical number",
     settings=_ARMOR_SETTINGS,
+    display_label="Armor / AFVs",
     subject_field="is_armor",
     items_field="vehicles",
     item_fields=[
@@ -280,6 +291,10 @@ ARMOR = Domain(
         ("nation", "mid"),          # e.g. Germany, United States, Soviet Union
         ("tactical_number", "high"), # painted hull/turret marking
         ("details", "phrase"),
+    ],
+    views=[
+        "broadside", "three-quarter front", "three-quarter rear", "head-on", "rear",
+        "overhead", "detail closeup", "interior/fighting compartment",
     ],
     prompt_fragments={
         "preamble": "This is an armored fighting vehicle photograph (or might be).",
@@ -295,10 +310,6 @@ ARMOR = Domain(
             "markings you can actually read in the image; leave blank if not legible."
         ),
         "era_examples": "WWI, WWII, Cold War, Vietnam era, modern",
-        "view_instruction": (
-            "broadside, three-quarter front, three-quarter rear, head-on, rear, "
-            "overhead, detail closeup, interior/fighting compartment"
-        ),
         "type_note": "",
         "fallback_preamble": (
             "This is an armored fighting vehicle photograph. Describe it for a "
@@ -362,6 +373,7 @@ AVIATION = Domain(
     subject_types=_AVIATION_SUBJECT_TYPES,
     identifier_label="tail code",
     settings=_AVIATION_SETTINGS,
+    display_label="Aviation / aircraft",
     subject_field="is_aviation",
     items_field="aircraft",
     item_fields=[
@@ -371,6 +383,10 @@ AVIATION = Domain(
         ("tail_code", "high"),       # serial number or tail code
         ("nickname", "high"),        # e.g. Memphis Belle, Enola Gay
         ("details", "phrase"),
+    ],
+    views=[
+        "broadside/profile", "three-quarter front", "three-quarter rear", "head-on",
+        "in flight", "landing/takeoff", "detail closeup", "cockpit",
     ],
     prompt_fragments={
         "preamble": "This is an aviation photograph (or might be).",
@@ -386,10 +402,6 @@ AVIATION = Domain(
             "read in the image; leave blank if not legible."
         ),
         "era_examples": "WWI, interwar, WWII, Korean War, Cold War, Vietnam era, modern",
-        "view_instruction": (
-            "broadside/profile, three-quarter front, three-quarter rear, head-on, "
-            "in flight, landing/takeoff, detail closeup, cockpit"
-        ),
         "type_note": "",
         "fallback_preamble": (
             "This is an aviation photograph. Describe it for a searchable photo index "
@@ -466,6 +478,7 @@ BIRDS = Domain(
     subject_types=_BIRD_SUBJECT_TYPES,
     identifier_label="species",
     settings=_BIRD_SETTINGS,
+    display_label="Birds / bird photography",
     subject_field="is_birds",
     items_field="birds",
     item_fields=[
@@ -475,6 +488,11 @@ BIRDS = Domain(
         ("behavior", "mid"),       # perched, in flight, foraging, displaying, preening
         ("plumage", "mid"),        # adult, juvenile, breeding, non-breeding, eclipse
         ("details", "phrase"),
+    ],
+    views=[
+        "perched", "in flight", "landing", "taking off", "soaring", "hovering", "swimming",
+        "wading", "diving", "foraging", "displaying", "singing/calling", "preening", "at nest",
+        "with prey", "flock",
     ],
     prompt_fragments={
         "preamble": "This is a bird photograph (or might be).",
@@ -489,11 +507,6 @@ BIRDS = Domain(
             "Note any visible leg bands or color rings in details."
         ),
         "era_examples": "recent digital, 1990s film, 1980s, historic",
-        "view_instruction": (
-            "perched, in flight, landing, taking off, soaring, hovering, swimming, "
-            "wading, diving, foraging, displaying, singing/calling, preening, at nest, "
-            "with prey, flock"
-        ),
         "type_note": "",
         "fallback_preamble": (
             "This is a bird photograph. Describe it for a searchable photo index "
@@ -584,6 +597,7 @@ MOTORSPORTS = Domain(
     subject_types=_MOTORSPORTS_SUBJECT_TYPES,
     identifier_label="car number",
     settings=_MOTORSPORTS_SETTINGS,
+    display_label="Motorsports / racing",
     subject_field="is_motorsports",
     items_field="cars",
     item_fields=[
@@ -594,6 +608,12 @@ MOTORSPORTS = Domain(
         ("class", "mid"),       # GT3, GTD, PCR, Late Model, Cup, etc.
         ("livery", "phrase"),   # primary colors and major sponsor names
         ("details", "phrase"),  # specific features: mirror color, wing livery, damage, etc.
+    ],
+    views=[
+        "tracking shot (panned, car in motion)", "static/parked", "pit stop action",
+        "starting grid", "driver portrait", "pit lane", "paddock/garage",
+        "podium/victory lane", "detail closeup", "overhead/aerial", "three-quarter front",
+        "three-quarter rear", "broadside", "head-on",
     ],
     prompt_fragments={
         "preamble": "This is a motorsports photograph (or might be).",
@@ -616,12 +636,6 @@ MOTORSPORTS = Domain(
             "identifiable from suit or uniform."
         ),
         "era_examples": "modern, 2010s, 2000s, 1990s, 1980s, vintage/historic",
-        "view_instruction": (
-            "tracking shot (panned, car in motion), static/parked, pit stop action, "
-            "starting grid, driver portrait, pit lane, paddock/garage, podium/victory lane, "
-            "detail closeup, overhead/aerial, three-quarter front, three-quarter rear, "
-            "broadside, head-on"
-        ),
         "type_note": (
             "Porsche Club Racing: distinguish 911 GT3 Cup (rear-engine, tall rear wing, "
             "roll cage visible) from Cayman GT4 Clubsport (mid-engine, lower rear wing). "
@@ -657,6 +671,25 @@ DOMAINS: dict[str, Domain] = {
     "birds": BIRDS,
     "motorsports": MOTORSPORTS,
 }
+
+
+def resolve_domain(name: str, default: Domain | None = None) -> Domain:
+    """Look up a domain by name, falling back to `default` (RAILROAD unless given)
+    for an unrecognized name — logged every time, once, here. Single source of
+    truth for that fallback: every caller that resolves a possibly-stale or
+    unrecognized domain name (an old index's stored config, a request payload)
+    goes through this instead of re-implementing `DOMAINS.get(name, RAILROAD)`
+    at each call site with its own (and easily inconsistent) logging.
+    """
+    fallback = default if default is not None else RAILROAD
+    domain = DOMAINS.get(name)
+    if domain is None:
+        _log.warning(
+            "Unknown domain %r — falling back to %s. Available domains: %s",
+            name, fallback.name, ", ".join(DOMAINS),
+        )
+        return fallback
+    return domain
 
 
 def get_domain(name: str) -> Domain:
