@@ -13,3 +13,6 @@ needlestack-core = { path = ".", editable = true }
 
 [tasks]
 test = "python -m pytest"
+# Release-gate cadence only, not part of `test` above — coverage is a
+# floor-check, not a quality gate.
+test-cov = "python -m pytest --cov --cov-report=term-missing"
