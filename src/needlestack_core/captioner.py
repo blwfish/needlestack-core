@@ -2,7 +2,7 @@ import base64
 import io
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 from PIL import Image
@@ -155,6 +155,12 @@ class Captioner:
         timeout_s = _TIMEOUT_S_BY_TIER.get(tier, _DEFAULT_TIMEOUT_S)
         self._client = httpx.Client(timeout=httpx.Timeout(timeout_s, connect=5.0))
         self.stats = CaptionStats()
+        # Pure functions of self._domain alone, which is fixed for this
+        # instance's lifetime (server.py constructs a new Captioner rather than
+        # mutating domain on an existing one) -- computed once here instead of
+        # rebuilt from scratch on every caption() call in the per-image loop.
+        self._schema = _make_schema(domain)
+        self._prompt = _make_prompt(domain)
 
     @property
     def domain(self) -> Domain:
@@ -172,8 +178,8 @@ class Captioner:
         second dedicated OCR pass is merged in to maximize identifier recall.
         """
         b64 = self._encode(image)
-        schema = _make_schema(self._domain)
-        prompt = _make_prompt(self._domain)
+        schema = self._schema
+        prompt = self._prompt
         try:
             data = self._generate(prompt, b64, schema=schema)
             parsed = json.loads(data["response"])

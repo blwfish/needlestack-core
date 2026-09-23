@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from PIL import Image
 
-from needlestack_core.captioner import Captioner, CaptionResult, CaptionStats
+from needlestack_core.captioner import Captioner, CaptionResult, CaptionStats, _make_schema
 from needlestack_core.taxonomy import NAVAL, RAILROAD, ARMOR, AVIATION, MOTORSPORTS
 
 
@@ -41,6 +41,53 @@ def mock_generate_with_stats(text, *, total_duration=0, eval_count=0,
         "prompt_eval_count": prompt_eval_count,
     }
     return resp
+
+
+# --- _make_schema / _encode (previously exercised only incidentally as side
+# effects of mocked caption() calls -- no test asserted on their own output) ---
+
+def test_make_schema_includes_required_fields_for_domain():
+    schema = _make_schema(RAILROAD)
+    assert schema["required"] == [RAILROAD.subject_field, "description"]
+    assert RAILROAD.subject_field in schema["properties"]
+    assert schema["properties"][RAILROAD.subject_field] == {"type": "boolean"}
+
+
+def test_make_schema_items_field_matches_domain_item_fields():
+    schema = _make_schema(MOTORSPORTS)
+    item_props = schema["properties"][MOTORSPORTS.items_field]["items"]["properties"]
+    assert set(item_props) == {f for f, _ in MOTORSPORTS.item_fields}
+    assert all(spec == {"type": "string"} for spec in item_props.values())
+
+
+def test_make_schema_differs_by_domain():
+    """Two different domains must not silently share a schema (e.g. from a
+    caching bug) -- their items_field/subject_field names differ."""
+    railroad_schema = _make_schema(RAILROAD)
+    naval_schema = _make_schema(NAVAL)
+    assert RAILROAD.items_field in railroad_schema["properties"]
+    assert NAVAL.items_field not in railroad_schema["properties"]
+    assert NAVAL.items_field in naval_schema["properties"]
+
+
+def test_encode_returns_valid_base64_jpeg():
+    import base64
+    c = Captioner()
+    b64 = c._encode(make_image())
+    raw = base64.b64decode(b64, validate=True)
+    assert raw[:2] == b"\xff\xd8"  # JPEG magic bytes
+    c.close()
+
+
+def test_encode_downsizes_large_image():
+    import base64
+    from PIL import Image as _Image
+    c = Captioner()
+    large = _Image.new("RGB", (2000, 2000), color=(10, 20, 30))
+    b64 = c._encode(large)
+    decoded = _Image.open(__import__("io").BytesIO(base64.b64decode(b64)))
+    assert max(decoded.size) <= 1024
+    c.close()
 
 
 # --- CaptionStats ---

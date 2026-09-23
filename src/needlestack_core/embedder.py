@@ -24,12 +24,21 @@ class Embedder:
     # this if the model changes; nothing else should hardcode 512.
     dim: int = 512
 
-    def __init__(self, model_name: str = MODEL_NAME, pretrained: str = PRETRAINED):
-        self.device = (
+    @staticmethod
+    def detect_device() -> str:
+        """mps > cuda > cpu, in order of preference. A staticmethod (not just
+        inlined in __init__) so callers that want to know/display which
+        backend will be used -- without instantiating Embedder, which loads
+        the actual CLIP model -- can call this directly instead of
+        hand-copying the same three-way check (doctor.py previously did)."""
+        return (
             "mps" if torch.backends.mps.is_available()
             else "cuda" if torch.cuda.is_available()
             else "cpu"
         )
+
+    def __init__(self, model_name: str = MODEL_NAME, pretrained: str = PRETRAINED):
+        self.device = self.detect_device()
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
             model_name, pretrained=pretrained
         )
