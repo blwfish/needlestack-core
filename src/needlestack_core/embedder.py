@@ -7,6 +7,16 @@ MODEL_NAME = "ViT-B-32"
 PRETRAINED = "openai"
 
 
+def _check_finite(vec: np.ndarray, source: str) -> None:
+    """A degenerate zero-norm feature vector divides to NaN/Inf silently -- this
+    turns that into a loud, specific failure (caught by indexer.py's per-image
+    try/except, same as any other embedding failure) instead of a corrupt
+    embedding being stored and silently poisoning every future similarity score
+    that touches it."""
+    if not np.all(np.isfinite(vec)):
+        raise ValueError(f"{source} produced non-finite values (degenerate zero-norm output)")
+
+
 class Embedder:
     # Output dimensionality of MODEL_NAME/PRETRAINED. A class attribute (not just an
     # instance property) so consumers needing the shape — e.g. an empty result matrix —
@@ -31,11 +41,15 @@ class Embedder:
         with torch.no_grad():
             features = self.model.encode_image(tensor)
             features = features / features.norm(dim=-1, keepdim=True)
-        return features.cpu().numpy()[0]
+        result = features.cpu().numpy()[0]
+        _check_finite(result, "embed_image")
+        return result
 
     def embed_text(self, text: str) -> np.ndarray:
         tokens = self.tokenizer([text]).to(self.device)
         with torch.no_grad():
             features = self.model.encode_text(tokens)
             features = features / features.norm(dim=-1, keepdim=True)
-        return features.cpu().numpy()[0]
+        result = features.cpu().numpy()[0]
+        _check_finite(result, "embed_text")
+        return result

@@ -83,3 +83,20 @@ def test_embed_image_values_are_finite(real_embedder):
     img = Image.new("RGB", (64, 64), color=(0, 0, 0))
     vec = real_embedder.embed_image(img)
     assert np.all(np.isfinite(vec))
+
+
+def test_check_finite_raises_on_nan():
+    """Unit-level test of the guard itself (doesn't need the real model): a
+    zero-norm division producing NaN/Inf must raise loudly, not return a
+    corrupt embedding that would silently poison every future similarity score
+    involving it."""
+    from needlestack_core.embedder import _check_finite
+    with pytest.raises(ValueError, match="non-finite"):
+        _check_finite(np.array([1.0, float("nan"), 0.5]), "embed_image")
+    with pytest.raises(ValueError, match="non-finite"):
+        _check_finite(np.array([float("inf"), 0.0]), "embed_text")
+
+
+def test_check_finite_passes_on_normal_vector():
+    from needlestack_core.embedder import _check_finite
+    _check_finite(np.array([0.1, -0.2, 0.3]), "embed_image")  # must not raise

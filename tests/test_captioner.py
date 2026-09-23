@@ -265,6 +265,33 @@ def test_caption_malformed_json_falls_back_to_plain():
     c.close()
 
 
+def test_caption_plain_fallback_survives_non_string_response():
+    """Regression: the fallback path's data["response"].strip() would raise
+    AttributeError uncaught on a non-string response -- a second, different
+    failure stacked on top of the first (structured parse already failed)."""
+    c = Captioner()
+    structured_resp = mock_generate_response("not json")
+    fallback_resp = MagicMock()
+    fallback_resp.raise_for_status.return_value = None
+    fallback_resp.json.return_value = {"response": None, "done_reason": "stop", "done": True}
+    with patch.object(c._client, "post", side_effect=[structured_resp, fallback_resp]):
+        result = c.caption(make_image())
+    assert result.caption == ""
+    c.close()
+
+
+def test_caption_thorough_ocr_survives_non_string_response():
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a tank car", "equipment": []}
+    ocr_resp = MagicMock()
+    ocr_resp.raise_for_status.return_value = None
+    ocr_resp.json.return_value = {"response": None, "done_reason": "stop", "done": True}
+    with patch.object(c._client, "post", side_effect=[mock_json_generate(payload), ocr_resp]):
+        result = c.caption(make_image(), thorough=True)
+    assert isinstance(result, CaptionResult)  # did not raise
+    c.close()
+
+
 def test_caption_thorough_merges_ocr_pass():
     c = Captioner()
     payload = {"is_railroad": True, "description": "a tank car",
@@ -415,6 +442,25 @@ def test_caption_stats_accumulates_unknown_field_count_across_calls():
     assert c.stats.total_unknown_fields == 2  # bad_payload's setting AND view
 
 
+def test_dropped_item_count_and_stats_aggregate():
+    """Regression: non-dict items in the model's array were skipped with only a
+    debug log line, no counter -- CLAUDE.md Data-Capture rule violation."""
+    c = Captioner()
+    payload = {
+        "is_railroad": True, "description": "a train",
+        "equipment": [
+            {"type": "caboose", "road_name": "", "reporting_marks": "",
+             "road_number": "", "details": ""},
+            "not a dict",
+            42,
+        ],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.dropped_item_count == 2
+    assert c.stats.total_dropped_items == 2
+
+
 # --- motorsports mixed-case subject types (regression: case-sensitivity bug) ---
 
 def test_motorsports_mixed_case_type_recognized_not_logged_unknown(caplog):
@@ -509,6 +555,50 @@ def test_connect_timeout_is_separate():
     t = c._client.timeout
     assert isinstance(t, httpx.Timeout)
     assert t.connect < t.read
+    c.close()
+
+
+def test_check_survives_malformed_tags_json():
+    """Regression: the JSON parse + field access after raise_for_status() used to
+    sit outside check()'s try/except, so malformed JSON crashed instead of
+    degrading to the documented (False, message) contract."""
+    c = Captioner()
+    bad_json_resp = MagicMock()
+    bad_json_resp.raise_for_status.return_value = None
+    bad_json_resp.json.side_effect = ValueError("not json")
+    with patch.object(c._client, "get", return_value=bad_json_resp):
+        ok, msg = c.check()
+    assert not ok
+    assert "not reachable" in msg.lower()
+    c.close()
+
+
+def test_check_survives_tags_entry_missing_name_key():
+    c = Captioner()
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"models": [{"size": 123}]}  # no "name" key
+    with patch.object(c._client, "get", return_value=resp):
+        ok, msg = c.check()
+    assert not ok
+    c.close()
+
+
+def test_quality_tier_gets_longer_timeout():
+    """Regression: a single fixed 120s timeout applied to every model tier left
+    the documented ~90-120s/photo "quality" tier no headroom at all."""
+    from needlestack_core.constants import MODEL_TIERS
+    quality_model = next(m for m, t in MODEL_TIERS.items() if t == "quality")
+    c = Captioner(model=quality_model)
+    balanced = Captioner(model="qwen2.5vl:7b")  # "balanced" tier
+    assert c._client.timeout.read > balanced._client.timeout.read
+    c.close()
+    balanced.close()
+
+
+def test_custom_model_gets_default_timeout():
+    c = Captioner(model="some-custom-model:latest")
+    assert c._client.timeout.read == 120.0
     c.close()
 
 

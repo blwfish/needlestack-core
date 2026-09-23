@@ -32,6 +32,23 @@ MODEL_TIERS: dict[str, str] = {v: k for k, v in MODEL_PRESETS.items()}
 PROMPT_SCHEMA_VERSION = "v2"
 
 
+def model_names_from_tags_response(data: dict) -> list[str]:
+    """Extract model names from Ollama's /api/tags response body.
+
+    Single source of truth so captioner.py's check() and doctor.py's Ollama
+    reachability check can't independently drift on how they parse this
+    (previously both used unguarded `m["name"]` dict indexing, duplicated).
+    Uses .get() rather than direct indexing: a models entry missing "name", or
+    a non-dict entry, is skipped rather than raising -- consistent with this
+    being a best-effort diagnostic/availability check, not a hard schema
+    contract with Ollama.
+    """
+    models = data.get("models", [])
+    if not isinstance(models, list):
+        return []
+    return [m["name"] for m in models if isinstance(m, dict) and "name" in m]
+
+
 def caption_version(model: str, domain: str) -> str:
     """Canonical per-image caption-version string. Single source of truth for the
     format so the indexer (which writes it) and the server (which counts staleness)

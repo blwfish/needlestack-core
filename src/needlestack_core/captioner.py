@@ -9,7 +9,7 @@ from PIL import Image
 
 from . import taxonomy
 from .taxonomy import Domain
-from .constants import DEFAULT_MODEL, OLLAMA_URL
+from .constants import DEFAULT_MODEL, OLLAMA_URL, MODEL_TIERS, model_names_from_tags_response
 
 _log = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ class CaptionStats:
     # vocabulary the model consistently misses).
     captions_with_unknown_fields: int = 0
     total_unknown_fields: int = 0
+    total_dropped_items: int = 0  # non-dict entries in the model's items array, discarded
 
     @property
     def avg_seconds_per_call(self) -> float:
@@ -128,6 +129,16 @@ class CaptionResult:
     view: str = ""              # camera perspective (broadside, bow quarter, etc.)
     truncated: bool = False     # Ollama's done_reason=="length" -- caption was cut off
     unknown_field_count: int = 0  # settings/view/type values outside the domain vocabulary
+    dropped_item_count: int = 0   # non-dict entries in the model's items array, discarded
+
+
+_DEFAULT_TIMEOUT_S = 120.0
+# constants.py documents the "quality" tier as running ~90-120s/photo -- a fixed
+# 120s timeout applied to every tier left quality-tier calls with no headroom at
+# all, so a call landing near that documented ceiling would time out and be
+# treated as an ordinary caption failure (logged, not distinguished as an
+# expected-slow-tier timeout) rather than actually failing.
+_TIMEOUT_S_BY_TIER = {"quality": 240.0}
 
 
 class Captioner:
@@ -140,7 +151,9 @@ class Captioner:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self._domain = domain
-        self._client = httpx.Client(timeout=httpx.Timeout(120.0, connect=5.0))
+        tier = MODEL_TIERS.get(model, "custom")
+        timeout_s = _TIMEOUT_S_BY_TIER.get(tier, _DEFAULT_TIMEOUT_S)
+        self._client = httpx.Client(timeout=httpx.Timeout(timeout_s, connect=5.0))
         self.stats = CaptionStats()
 
     @property
@@ -178,6 +191,7 @@ class Captioner:
         if result.unknown_field_count:
             self.stats.captions_with_unknown_fields += 1
             self.stats.total_unknown_fields += result.unknown_field_count
+        self.stats.total_dropped_items += result.dropped_item_count
         return result
 
     def check(self) -> tuple[bool, str]:
@@ -187,14 +201,18 @@ class Captioner:
         entire purpose is to turn "is Ollama reachable" into a status tuple for the
         caller to display, never to raise — any failure to reach or parse the
         response means "not reachable," regardless of the specific exception type.
+        The whole reach-and-parse sequence is inside one try (previously the JSON
+        parse/field-access after raise_for_status() sat outside it, so malformed
+        JSON or a models entry missing "name" raised uncaught instead of
+        degrading per this docstring's own stated contract).
         """
         try:
             resp = self._client.get(f"{self.base_url}/api/tags", timeout=5.0)
             resp.raise_for_status()
+            models = model_names_from_tags_response(resp.json())
         except Exception:
             return False, f"Ollama not reachable at {self.base_url}"
 
-        models = [m["name"] for m in resp.json().get("models", [])]
         base = self.model.split(":")[0]
         # Accept exact match or the untagged pull (stored as :latest by Ollama).
         model_found = self.model in models or f"{base}:latest" in models
@@ -250,7 +268,13 @@ class Captioner:
         fallback_prompt = self._domain.prompt_fragments.get("fallback_preamble", "")
         try:
             data = self._generate(fallback_prompt, b64)
-            text = data["response"].strip()
+            # str(x or "") rather than data["response"].strip(): a non-string
+            # response (e.g. None, or a type Ollama's schema-less plain-text
+            # path doesn't guarantee) would otherwise raise AttributeError here
+            # uncaught -- this is already the fallback path for a first failure,
+            # so a second, different-shaped failure here must still degrade to
+            # the documented empty-caption contract, not stack a third one.
+            text = str(data["response"] or "").strip()
             truncated = data.get("done_reason") == "length"
         except (KeyError, httpx.HTTPError) as e:
             _log.warning("Plain caption also failed: %s", e)
@@ -262,7 +286,10 @@ class Captioner:
         """Add a dedicated OCR pass's lines into parsed['visible_text'] (deduped)."""
         try:
             data = self._generate(_OCR_PROMPT, b64)
-            lines = [ln.strip(" -•\t") for ln in data["response"].splitlines()]
+            # str(x or "") for the same reason as _plain_caption above: a
+            # non-string response must degrade to "no OCR text found", not
+            # raise AttributeError from an unguarded .splitlines().
+            lines = [ln.strip(" -•\t") for ln in str(data["response"] or "").splitlines()]
         except (KeyError, httpx.HTTPError) as e:
             _log.warning("OCR pass failed: %s", e)
             return
@@ -311,10 +338,12 @@ class Captioner:
         # misreported as "unknown" below, while an all-lowercase domain like railroad
         # happened to work by accident.
         valid_types_lower = {t.lower() for t in domain.valid_subject_types}
+        dropped_item_count = 0
 
         for idx, item in enumerate(items):
             if not isinstance(item, dict):
                 _log.debug("Skipping non-dict item at index %d in model output", idx)
+                dropped_item_count += 1
                 continue
             etype = str(item.get("type") or "").strip()
             if etype and etype.lower() not in valid_types_lower:
@@ -350,6 +379,7 @@ class Captioner:
             view=view,
             truncated=truncated,
             unknown_field_count=unknown_field_count,
+            dropped_item_count=dropped_item_count,
         )
 
     @staticmethod
