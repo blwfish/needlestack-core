@@ -32,8 +32,19 @@ MODEL_TIERS: dict[str, str] = {v: k for k, v in MODEL_PRESETS.items()}
 PROMPT_SCHEMA_VERSION = "v2"
 
 
-def caption_version(model: str) -> str:
+def caption_version(model: str, domain: str) -> str:
     """Canonical per-image caption-version string. Single source of truth for the
     format so the indexer (which writes it) and the server (which counts staleness)
-    never disagree on how model+schema map to a version."""
-    return f"{model}:{PROMPT_SCHEMA_VERSION}"
+    never disagree on how model+schema+domain map to a version.
+
+    `domain` is part of the version -- not just model+schema -- because a domain
+    change (e.g. re-running `needlestack index <dir> --domain naval` on a
+    directory previously indexed as railroad) changes what fields the model is
+    asked to return and how they should be interpreted, but the file's hash and
+    the model producing it may be unchanged. Without domain in the version, the
+    indexer's skip-check ("already captioned under the current version") would
+    treat every file as up to date and silently skip re-captioning, leaving
+    stale railroad-domain structured data in a database that now reports itself
+    as the naval domain for that root.
+    """
+    return f"{model}:{PROMPT_SCHEMA_VERSION}:{domain}"

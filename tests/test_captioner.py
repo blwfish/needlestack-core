@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from needlestack_core.captioner import Captioner, CaptionResult, CaptionStats
-from needlestack_core.taxonomy import NAVAL, RAILROAD, ARMOR, AVIATION
+from needlestack_core.taxonomy import NAVAL, RAILROAD, ARMOR, AVIATION, MOTORSPORTS
 
 
 def make_image():
@@ -348,6 +348,110 @@ def test_caption_no_warning_on_normal_stop(caplog):
             c.caption(make_image())
     assert not any("truncated" in r.message.lower() or "token limit" in r.message.lower()
                    for r in caplog.records)
+    c.close()
+
+
+def test_caption_result_truncated_flag_set_on_length(caplog):
+    """Regression: done_reason=='length' was detected and logged, but never stored
+    anywhere in CaptionResult -- downstream consumers had no way to tell a
+    truncated caption from a complete one."""
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "truncated mid"}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload, done_reason="length")):
+        result = c.caption(make_image())
+    assert result.truncated is True
+    c.close()
+
+
+def test_caption_result_truncated_flag_false_on_normal_stop():
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a caboose"}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload, done_reason="stop")):
+        result = c.caption(make_image())
+    assert result.truncated is False
+    c.close()
+
+
+def test_caption_plain_fallback_truncated_flag_set_on_length():
+    """The plain-text fallback path also reports Ollama's done_reason, not just
+    the structured-parse path."""
+    c = Captioner()
+    bad_json = mock_generate_response("not json", done_reason="stop")
+    fallback = mock_generate_response("plain text caption", done_reason="length")
+    with patch.object(c._client, "post", side_effect=[bad_json, fallback]):
+        result = c.caption(make_image())
+    assert result.truncated is True
+    c.close()
+
+
+# --- unknown-field aggregation (CaptionStats) ---
+
+def test_caption_unknown_field_count_on_result():
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a train", "setting": "space station",
+               "equipment": []}
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        result = c.caption(make_image())
+    assert result.unknown_field_count == 1
+
+
+def test_caption_stats_accumulates_unknown_field_count_across_calls():
+    """Regression: each unrecognized setting/view/type was only a per-item log
+    line, with no run-level counter -- a systematic vocabulary mismatch (e.g. one
+    whole domain's items always logging as "unknown") was invisible without
+    reading every log line. CaptionStats now surfaces both how many captions had
+    at least one unrecognized field, and the total count across all of them."""
+    c = Captioner()
+    ok_payload = {"is_railroad": True, "description": "a caboose", "setting": "yard"}
+    bad_payload = {
+        "is_railroad": True, "description": "odd", "setting": "space station",
+        "view": "orbital",
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(ok_payload)):
+        c.caption(make_image())
+    with patch.object(c._client, "post", return_value=mock_json_generate(bad_payload)):
+        c.caption(make_image())
+    assert c.stats.captions_with_unknown_fields == 1
+    assert c.stats.total_unknown_fields == 2  # bad_payload's setting AND view
+
+
+# --- motorsports mixed-case subject types (regression: case-sensitivity bug) ---
+
+def test_motorsports_mixed_case_type_recognized_not_logged_unknown(caplog):
+    """Regression: domain.valid_subject_types holds the dict's original-case keys
+    (e.g. "GT3 car", "NASCAR Cup car"), but the comparison lowercased only the
+    model's `etype` -- so a mixed-case canonical type could never match, and
+    every correctly-typed motorsports item was misreported as "unknown". Verified
+    against the real MOTORSPORTS domain, not a synthetic mixed-case fixture."""
+    c = Captioner(domain=MOTORSPORTS)
+    payload = {
+        "is_motorsports": True, "description": "a GT3 car on track",
+        "cars": [{"type": "GT3 car", "make": "Porsche", "car_number": "912",
+                  "series": "", "class": "", "livery": "", "details": ""}],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack_core.captioner"):
+            result = c.caption(make_image())
+    assert result.unknown_field_count == 0
+    assert not any("unknown" in r.message.lower() and "GT3 car" in r.message
+                   for r in caplog.records)
+    c.close()
+
+
+def test_motorsports_genuinely_unrecognized_type_still_logged(caplog):
+    """The fix must not stop flagging real unrecognized types -- only stop
+    false-flagging correct mixed-case ones."""
+    c = Captioner(domain=MOTORSPORTS)
+    payload = {
+        "is_motorsports": True, "description": "a car",
+        "cars": [{"type": "hovercraft", "make": "", "car_number": "", "series": "",
+                  "class": "", "livery": "", "details": ""}],
+    }
+    with patch.object(c._client, "post", return_value=mock_json_generate(payload)):
+        with caplog.at_level(logging.INFO, logger="needlestack_core.captioner"):
+            result = c.caption(make_image())
+    assert result.unknown_field_count == 1
+    assert any("hovercraft" in r.message for r in caplog.records)
     c.close()
 
 

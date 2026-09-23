@@ -31,6 +31,13 @@ class CaptionStats:
     total_eval_duration_ns: int = 0
     total_load_duration_ns: int = 0
     total_prompt_eval_count: int = 0
+    # Aggregate visibility into how often the model returns a field outside the
+    # domain's known vocabulary (unrecognized setting/view/type) -- previously
+    # each occurrence was only a per-item debug/info log line, with no run-level
+    # signal that would surface a systematic problem (e.g. a domain whose
+    # vocabulary the model consistently misses).
+    captions_with_unknown_fields: int = 0
+    total_unknown_fields: int = 0
 
     @property
     def avg_seconds_per_call(self) -> float:
@@ -119,6 +126,8 @@ class CaptionResult:
     equipment: str = ""         # flattened subject types + class/road names (FTS-weighted mid)
     structured_json: str = ""   # raw model JSON, so nothing is ever silently dropped
     view: str = ""              # camera perspective (broadside, bow quarter, etc.)
+    truncated: bool = False     # Ollama's done_reason=="length" -- caption was cut off
+    unknown_field_count: int = 0  # settings/view/type values outside the domain vocabulary
 
 
 class Captioner:
@@ -133,6 +142,13 @@ class Captioner:
         self._domain = domain
         self._client = httpx.Client(timeout=httpx.Timeout(120.0, connect=5.0))
         self.stats = CaptionStats()
+
+    @property
+    def domain(self) -> Domain:
+        """The domain this Captioner was constructed with -- public so callers
+        (e.g. current_caption_version) can build a version string that changes
+        when the domain does, without reaching into a private attribute."""
+        return self._domain
 
     # -- public API ---------------------------------------------------------------
 
@@ -154,10 +170,15 @@ class Captioner:
             _log.warning("Structured caption failed (%s); falling back to plain text", e)
             return self._plain_caption(b64)
 
+        truncated = data.get("done_reason") == "length"
         if thorough:
             self._merge_ocr_pass(parsed, b64)
 
-        return self._build_result(parsed, self._domain)
+        result = self._build_result(parsed, self._domain, truncated=truncated)
+        if result.unknown_field_count:
+            self.stats.captions_with_unknown_fields += 1
+            self.stats.total_unknown_fields += result.unknown_field_count
+        return result
 
     def check(self) -> tuple[bool, str]:
         """Return (ok, message). Checks Ollama is running and model is available.
@@ -230,10 +251,12 @@ class Captioner:
         try:
             data = self._generate(fallback_prompt, b64)
             text = data["response"].strip()
+            truncated = data.get("done_reason") == "length"
         except (KeyError, httpx.HTTPError) as e:
             _log.warning("Plain caption also failed: %s", e)
             text = ""
-        return CaptionResult(caption=text, description=text)
+            truncated = False
+        return CaptionResult(caption=text, description=text, truncated=truncated)
 
     def _merge_ocr_pass(self, parsed: dict, b64: str) -> None:
         """Add a dedicated OCR pass's lines into parsed['visible_text'] (deduped)."""
@@ -253,12 +276,13 @@ class Captioner:
                 seen.add(ln.lower())
         parsed["visible_text"] = existing
 
-    def _build_result(self, parsed: dict, domain: Domain) -> CaptionResult:
+    def _build_result(self, parsed: dict, domain: Domain, truncated: bool = False) -> CaptionResult:
         description = str(parsed.get("description") or "").strip()
         setting = str(parsed.get("setting") or "").strip()
         era = str(parsed.get("era") or "").strip()
         view = str(parsed.get("view") or "").strip()
         is_subject = bool(parsed.get(domain.subject_field))
+        unknown_field_count = 0
 
         # setting/view are drawn from bounded vocabularies (domain.settings / domain.views);
         # era is deliberately freeform (era_examples are illustrative, not exhaustive), so
@@ -266,8 +290,10 @@ class Captioner:
         # value is model drift worth knowing about, not a reason to drop the field.
         if setting and setting.lower() not in {s.lower() for s in domain.settings}:
             _log.info("Unknown %s setting from model (kept): %r", domain.name, setting)
+            unknown_field_count += 1
         if view and view.lower() not in {v.lower() for v in domain.views}:
             _log.info("Unknown %s view from model (kept): %r", domain.name, view)
+            unknown_field_count += 1
 
         items = parsed.get(domain.items_field)
         items = items if isinstance(items, list) else []
@@ -278,14 +304,22 @@ class Captioner:
         mark_tokens: list[str] = []      # high-value identifiers (hull numbers, marks)
         equip_tokens: list[str] = []     # subject types + class/road names
         equip_phrases: list[str] = []    # human-readable per-item phrases for the caption
+        # Lowercased once per call, not per item: domain.valid_subject_types holds the
+        # dict's original-case keys, so comparing against it directly with a lowercased
+        # `etype` silently never matched any mixed-case canonical type (e.g. motorsports'
+        # "GT3 car", "NASCAR Cup car") -- every correctly-typed item in those domains was
+        # misreported as "unknown" below, while an all-lowercase domain like railroad
+        # happened to work by accident.
+        valid_types_lower = {t.lower() for t in domain.valid_subject_types}
 
         for idx, item in enumerate(items):
             if not isinstance(item, dict):
                 _log.debug("Skipping non-dict item at index %d in model output", idx)
                 continue
             etype = str(item.get("type") or "").strip()
-            if etype and etype.lower() not in domain.valid_subject_types:
+            if etype and etype.lower() not in valid_types_lower:
                 _log.info("Unknown %s type from model (kept): %r", domain.name, etype)
+                unknown_field_count += 1
 
             phrase_parts: list[str] = []
             for field_name, fts_weight in domain.item_fields:
@@ -314,6 +348,8 @@ class Captioner:
             equipment=" ".join(dict.fromkeys(equip_tokens)),
             structured_json=json.dumps(parsed, ensure_ascii=False),
             view=view,
+            truncated=truncated,
+            unknown_field_count=unknown_field_count,
         )
 
     @staticmethod
