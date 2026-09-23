@@ -41,6 +41,27 @@ class Domain:
     # Optional notation dict (e.g. Whyte wheel arrangements for steam)
     notation: dict[str, str] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # A synonym (or canonical name) that's shared by two different canonical
+        # subject types is silently load-bearing for both: synonyms_for() would
+        # union results from both families with no way to tell which was meant.
+        # Caught here, at construction time, rather than left as a data-hygiene
+        # hope -- two such collisions (aviation's "flying boat", motorsports'
+        # "Cup car") previously existed for an unknown period with zero test
+        # coverage or other mechanism that would have caught either.
+        seen: dict[str, str] = {}
+        for canonical, synonyms in self.subject_types.items():
+            for term in (canonical, *synonyms):
+                key = term.lower()
+                owner = seen.get(key)
+                if owner is not None and owner != canonical:
+                    raise ValueError(
+                        f"Domain {self.name!r}: {term!r} is listed as a synonym of "
+                        f"both {owner!r} and {canonical!r} -- an ambiguous synonym "
+                        "must belong to exactly one canonical subject type."
+                    )
+                seen[key] = canonical
+
     @property
     def valid_subject_types(self) -> frozenset[str]:
         return frozenset(self.subject_types)
@@ -353,7 +374,7 @@ _AVIATION_SUBJECT_TYPES: dict[str, list[str]] = {
         "spyplane",
     ],
     "maritime patrol": [
-        "ASW aircraft", "patrol aircraft", "flying boat", "anti-submarine",
+        "ASW aircraft", "patrol aircraft", "anti-submarine",
         "maritime reconnaissance",
     ],
     "tanker": ["aerial refueling", "air-to-air refueling", "tanker aircraft"],
@@ -555,8 +576,9 @@ _MOTORSPORTS_SUBJECT_TYPES: dict[str, list[str]] = {
     ],
     "Porsche 718 Cayman": ["718 Cayman", "718 Club Sport"],
     "Porsche 911": ["911", "992", "991", "997", "996", "993", "964", "930"],
-    # NASCAR
-    "NASCAR Cup car": ["Cup Series car", "Next Gen car", "Cup car"],
+    # NASCAR ("Cup car" alone is reserved for Porsche 911 GT3 Cup above, per its
+    # "highest priority" marking -- NASCAR's own unambiguous synonyms are kept)
+    "NASCAR Cup car": ["Cup Series car", "Next Gen car"],
     "NASCAR Xfinity car": ["Xfinity car", "Xfinity Series car"],
     "NASCAR Truck": ["Truck Series", "Craftsman Truck", "SuperTruck", "pickup race truck"],
     "Super Late Model": ["SLM", "full-bodied Late Model"],

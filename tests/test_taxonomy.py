@@ -1,7 +1,8 @@
 import pytest
 from needlestack_core import taxonomy
 from needlestack_core.taxonomy import (
-    RAILROAD, NAVAL, ARMOR, AVIATION, BIRDS, MOTORSPORTS, get_domain, resolve_domain, DOMAINS,
+    RAILROAD, NAVAL, ARMOR, AVIATION, BIRDS, MOTORSPORTS, Domain,
+    get_domain, resolve_domain, DOMAINS,
 )
 
 
@@ -229,6 +230,16 @@ def test_aviation_synonyms_for_abbreviation():
     assert "drone" in syn
 
 
+def test_aviation_flying_boat_does_not_leak_maritime_patrol_terms():
+    """Regression: "flying boat" was listed under both "seaplane" (its correct
+    airframe-type family) and "maritime patrol" (a mission-type family), so
+    synonyms_for("flying boat") silently unioned both."""
+    syn = AVIATION.synonyms_for("flying boat")
+    assert "floatplane" in syn and "amphibian" in syn  # seaplane siblings, correct
+    assert "ASW aircraft" not in syn
+    assert "maritime reconnaissance" not in syn
+
+
 # --- birds domain ---
 
 def test_get_domain_birds():
@@ -339,6 +350,30 @@ def test_motorsports_synonyms_for_late_model():
 
 def test_motorsports_synonyms_for_unknown():
     assert MOTORSPORTS.synonyms_for("locomotive") == []
+
+
+def test_motorsports_cup_car_does_not_leak_nascar_terms():
+    """Regression: "Cup car" was listed under both Porsche 911 GT3 Cup and NASCAR
+    Cup car, so synonyms_for("Cup car") silently unioned both families' terms.
+    Porsche is the "highest priority" owner of the bare term (see taxonomy.py);
+    NASCAR's own synonyms ("Cup Series car", "Next Gen car") stay unambiguous."""
+    syn = MOTORSPORTS.synonyms_for("Cup car")
+    assert "Cup Series car" not in syn
+    assert "Next Gen car" not in syn
+    assert "NASCAR Cup car" not in syn
+
+
+def test_domain_rejects_ambiguous_synonym_at_construction():
+    """A synonym listed under two different canonical types must be rejected, not
+    silently merged by synonyms_for() -- this is the structural guard that would
+    have caught the "Cup car" / "flying boat" collisions before they shipped."""
+    with pytest.raises(ValueError, match="ambiguous synonym"):
+        Domain(
+            name="test", subject_types={"a": ["shared term"], "b": ["shared term"]},
+            identifier_label="", settings=[], display_label="",
+            subject_field="", items_field="", item_fields=[], views=[],
+            prompt_fragments={},
+        )
 
 
 def test_motorsports_people_types_in_subject_types():
