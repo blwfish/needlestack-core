@@ -294,6 +294,18 @@ def test_birds_synonyms_for_unknown():
     assert BIRDS.synonyms_for("locomotive") == []
 
 
+def test_birds_synonyms_for_recognized_term_with_no_synonyms():
+    """Pins the ambiguous zero-remainder case the Threshold-Boundary Testing
+    Rule calls out by name: "kingfisher" is a genuine canonical BIRDS type with
+    an empty synonym list, so synonyms_for("kingfisher") returns [] for the
+    same reason as a genuinely unrecognized term (both currently return []) --
+    this test exists so a future refactor that changes ONE of these two cases
+    without the other is caught, even though the two are indistinguishable by
+    return value alone today."""
+    assert "kingfisher" in BIRDS.subject_types  # recognized...
+    assert BIRDS.synonyms_for("kingfisher") == []  # ...but returns [] like unknown does
+
+
 # --- motorsports domain ---
 
 def test_get_domain_motorsports():

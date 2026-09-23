@@ -399,6 +399,38 @@ def test_caption_result_truncated_flag_false_on_normal_stop():
     c.close()
 
 
+def test_generate_warns_on_unexpected_done_reason(caplog):
+    """Pins the third branch of _generate's done_reason handling ("length" and
+    "stop"/None were both tested; a genuinely unexpected value like Ollama's
+    own "content_filter"/"error" reasons was not)."""
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a caboose"}
+    resp = mock_json_generate(payload, done_reason="content_filter")
+    with patch.object(c._client, "post", return_value=resp):
+        with caplog.at_level(logging.WARNING, logger="needlestack_core.captioner"):
+            result = c.caption(make_image())
+    assert any("unexpected done_reason" in r.message.lower() for r in caplog.records)
+    assert result.truncated is False  # only "length" sets truncated, not any non-stop value
+    c.close()
+
+
+def test_generate_no_warning_when_done_reason_key_omitted_entirely(caplog):
+    """Pins the None-default path distinctly from an explicit done_reason="stop"
+    -- data.get("done_reason") with the key entirely absent must be treated the
+    same as "stop" (no warning), not as "unexpected"."""
+    c = Captioner()
+    payload = {"is_railroad": True, "description": "a caboose"}
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"response": json.dumps(payload), "done": True}  # no done_reason key
+    with patch.object(c._client, "post", return_value=resp):
+        with caplog.at_level(logging.WARNING, logger="needlestack_core.captioner"):
+            result = c.caption(make_image())
+    assert not any("unexpected done_reason" in r.message.lower() for r in caplog.records)
+    assert result.truncated is False
+    c.close()
+
+
 def test_caption_plain_fallback_truncated_flag_set_on_length():
     """The plain-text fallback path also reports Ollama's done_reason, not just
     the structured-parse path."""
