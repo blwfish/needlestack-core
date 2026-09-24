@@ -26,3 +26,16 @@ packages = ["src/needlestack_core"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# pytest-cov was already a declared dev dependency but never configured or
+# invoked. Coverage is a floor-check, not a quality gate — deliberately not
+# wired into the default `test` task; invoke explicitly via `pixi run
+# test-cov`. /full-review's Phase 3.5 detects this config and runs it the
+# same way.
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
+skip_empty = true
