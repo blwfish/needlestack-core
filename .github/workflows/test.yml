@@ -1,0 +1,62 @@
+name: tests
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Cache CLIP model weights
+        # test_embedder.py loads the actual ViT-B-32/openai CLIP checkpoint via
+        # open_clip -> HuggingFace Hub (real, non-mocked tests); cache it so
+        # every run doesn't re-download ~350MB.
+        uses: actions/cache@v4
+        with:
+          path: ~\.cache\huggingface
+          key: ${{ runner.os }}-clip-vit-b-32-openai
+
+      - name: Install CPU-only PyTorch
+        # Install torch before the rest so pip sees it as already satisfied
+        # and doesn't pull the large CUDA build when resolving open-clip-torch.
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install project and test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run unit tests
+        run: pytest
+
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel
+
+      - name: Install wheel into fresh environment and smoke-test
+        run: |
+          python -m venv dist-venv
+          dist-venv\Scripts\pip install torch --index-url https://download.pytorch.org/whl/cpu
+          dist-venv\Scripts\pip install (Get-Item dist\*.whl).FullName
+          dist-venv\Scripts\python -c "from needlestack_core.captioner import Captioner; from needlestack_core.embedder import Embedder; from needlestack_core.taxonomy import RAILROAD; print('needlestack_core imports OK')"
+        shell: pwsh
